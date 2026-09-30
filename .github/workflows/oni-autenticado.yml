@@ -1,0 +1,79 @@
+name: ONI Test - AUTENTICADO (modelo Gove)
+
+# Prova que autenticar resolve. Modelo fiel ao Gove:
+#   - credenciais via secrets DEPLOY_AWS_ACCESS_KEY_ID / DEPLOY_AWS_SECRET_ACCESS_KEY
+#   - job ecr-public-auth gera o token do ECR Public
+#   - 4 deploys paralelos (needs: [build, ecr-public-auth]) puxam a oni
+#     AUTENTICADA via container.credentials
+# Estrutura de deploy identica ao Gove (4 jobs largam juntos).
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  ecr-public-auth:
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.tok.outputs.token }}
+    steps:
+      - name: Gerar token do ECR Public
+        id: tok
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          TOKEN=$(aws ecr-public get-login-password --region us-east-1)
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "token gerado ok"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "build iniciou $(date -u +%T)"; sleep 50; echo "build fim $(date -u +%T)"
+
+  deploy-prod-api:
+    needs: [build, ecr-public-auth]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+      credentials:
+        username: AWS
+        password: ${{ needs.ecr-public-auth.outputs.token }}
+    steps:
+      - run: echo "deploy-prod-api AUTENTICADO $(date -u +%T)"
+
+  deploy-prod-workers:
+    needs: [build, ecr-public-auth]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+      credentials:
+        username: AWS
+        password: ${{ needs.ecr-public-auth.outputs.token }}
+    steps:
+      - run: echo "deploy-prod-workers AUTENTICADO $(date -u +%T)"
+
+  deploy-prod-admin:
+    needs: [build, ecr-public-auth]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+      credentials:
+        username: AWS
+        password: ${{ needs.ecr-public-auth.outputs.token }}
+    steps:
+      - run: echo "deploy-prod-admin AUTENTICADO $(date -u +%T)"
+
+  deploy-prod-api-vpn:
+    needs: [build, ecr-public-auth]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+      credentials:
+        username: AWS
+        password: ${{ needs.ecr-public-auth.outputs.token }}
+    steps:
+      - run: echo "deploy-prod-api-vpn AUTENTICADO $(date -u +%T)"
