@@ -1,0 +1,55 @@
+name: ONI Test - Opcao 2 (pares escalonados via needs)
+
+# Testa a Opcao 2: em vez dos 4 deploys largarem juntos (needs:[build]),
+# escalonar em 2 ondas para reduzir pulls simultaneos:
+#   onda 1: api + workers   (needs: build-fake)
+#   onda 2: admin (needs: api) + api-vpn (needs: workers)
+# Assim no maximo 2 pulls colidem por vez, em vez de 4.
+# NAO usa credenciais. Roda manualmente (workflow_dispatch).
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-fake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simular build
+        run: |
+          echo "build-fake iniciou $(date -u +%T) UTC"
+          sleep 50
+          echo "build-fake terminou $(date -u +%T) UTC"
+
+  # ---- ONDA 1: largam juntos com o fim do build (2 pulls simultaneos) ----
+  deploy-api:
+    needs: [build-fake]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-api (onda 1) rodou as $(date -u +%T) UTC"
+
+  deploy-workers:
+    needs: [build-fake]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-workers (onda 1) rodou as $(date -u +%T) UTC"
+
+  # ---- ONDA 2: esperam a onda 1 (escalonados) ----
+  deploy-admin:
+    needs: [deploy-api]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-admin (onda 2, needs api) rodou as $(date -u +%T) UTC"
+
+  deploy-api-vpn:
+    needs: [deploy-workers]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-api-vpn (onda 2, needs workers) rodou as $(date -u +%T) UTC"
