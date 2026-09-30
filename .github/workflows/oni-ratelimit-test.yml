@@ -1,0 +1,135 @@
+name: ONI ECR-Public Rate Limit Test
+
+# Dispara manualmente (aba Actions -> Run workflow). NAO usa credenciais.
+# Objetivo: reproduzir `toomanyrequests: Data limit exceeded` do pull ANONIMO
+# de public.ecr.aws/dnxbrasil/oni:3.6.3 e isolar a causa.
+#
+# Duas abordagens no mesmo arquivo:
+#   PARTE A (fiel-gove-*): replica a ESTRUTURA real do pipeline do Gove
+#     -> sonar-fake + build-fake, e 4 deploys em paralelo com needs:[build-fake]
+#        usando container: image: oni. Os 4 pulls colidem no MESMO instante
+#        (quando o build-fake termina), igual ao pipeline real.
+#   PARTE B (ctrl-*): cenarios de controle isolados (unico / paralelo puro /
+#        rajada) para comparar.
+#
+# Ler os resultados:
+#   - Se fiel-gove-deploy-* falha em alguns e ctrl-single passa
+#     => e a COLISAO dos 4 pulls no instante do fim do build (limite ~1/s anonimo).
+#   - Se ctrl-single TAMBEM falha => nao e paralelismo; e balde/limite global.
+#   - ctrl-burst mostra o ponto de corte por rajada.
+
+on:
+  workflow_dispatch: {}
+
+env:
+  IMAGE: public.ecr.aws/dnxbrasil/oni:3.6.3
+
+jobs:
+  # ===========================================================================
+  # PARTE A - REPLICA FIEL DA ESTRUTURA DO GOVE (sem credenciais / sem deploy)
+  # ===========================================================================
+
+  # Imita o job sonarqube-scan (roda em paralelo, nao puxa a oni, so consome
+  # tempo/rede parecido). Sem VPN real - apenas um atraso equivalente.
+  fiel-gove-sonar-fake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simular tempo do scan (sem VPN real)
+        run: |
+          echo "sonar-fake iniciou $(date -u +%T) UTC"
+          sleep 40
+          echo "sonar-fake terminou $(date -u +%T) UTC"
+
+  # Imita o job build (roda antes dos deploys). Nao builda de verdade, so
+  # consome um tempo parecido para que os deploys larguem juntos ao terminar.
+  fiel-gove-build-fake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simular tempo do build (sem push real)
+        run: |
+          echo "build-fake iniciou $(date -u +%T) UTC"
+          sleep 60
+          echo "build-fake terminou $(date -u +%T) UTC - deploys vao largar agora"
+
+  # Os 4 deploys reais do Gove: deploy-prod-api, -workers, -admin, -api-vpn.
+  # Todos com needs:[build-fake] => largam JUNTOS quando o build-fake termina.
+  # Cada um roda DENTRO do container oni => o pull acontece no "Initialize
+  # containers", ANTES de qualquer step (exatamente como no Gove).
+  fiel-gove-deploy-api:
+    needs: [fiel-gove-build-fake]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-api dentro do container oni as $(date -u +%T) UTC"
+
+  fiel-gove-deploy-workers:
+    needs: [fiel-gove-build-fake]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-workers dentro do container oni as $(date -u +%T) UTC"
+
+  fiel-gove-deploy-admin:
+    needs: [fiel-gove-build-fake]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-admin dentro do container oni as $(date -u +%T) UTC"
+
+  fiel-gove-deploy-api-vpn:
+    needs: [fiel-gove-build-fake]
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-api-vpn dentro do container oni as $(date -u +%T) UTC"
+
+  # ===========================================================================
+  # PARTE B - CENARIOS DE CONTROLE ISOLADOS
+  # ===========================================================================
+
+  # Controle 1: pull unico e isolado (baseline).
+  ctrl-single:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker logout public.ecr.aws || true
+      - name: Pull unico anonimo
+        run: |
+          echo "== single as $(date -u +%T) UTC =="
+          docker pull "$IMAGE" && echo "SINGLE: SUCESSO" || echo "SINGLE: FALHOU"
+
+  # Controle 2: 4 pulls em paralelo puro (sem build na frente), via matrix.
+  ctrl-parallel:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4]
+    steps:
+      - run: docker logout public.ecr.aws || true
+      - name: Pull paralelo replica ${{ matrix.replica }}
+        run: |
+          echo "== replica ${{ matrix.replica }} as $(date -u +%T.%N) UTC =="
+          docker pull "$IMAGE" && echo "REPLICA ${{ matrix.replica }}: SUCESSO" || echo "REPLICA ${{ matrix.replica }}: FALHOU"
+
+  # Controle 3: rajada de 10 pulls sequenciais.
+  ctrl-burst:
+    runs-on: ubuntu-latest
+    steps:
+      - run: docker logout public.ecr.aws || true
+      - name: 10 pulls sequenciais
+        run: |
+          ok=0; fail=0
+          for i in $(seq 1 10); do
+            docker rmi "$IMAGE" >/dev/null 2>&1 || true
+            echo "-- tentativa $i as $(date -u +%T) UTC --"
+            if docker pull "$IMAGE" >/dev/null 2>err.txt; then
+              echo "  $i: SUCESSO"; ok=$((ok+1))
+            else
+              echo "  $i: FALHOU -> $(tr '\n' ' ' < err.txt)"; fail=$((fail+1))
+            fi
+          done
+          echo "==== RESUMO: $ok sucessos / $fail falhas em 10 ===="
