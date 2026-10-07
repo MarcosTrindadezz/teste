@@ -44,6 +44,7 @@ jobs:
           aws-region: us-east-1
           role-to-assume: arn:aws:iam::619071308707:role/ci-ecr-oni-pull
           role-session-name: GithubOniPull
+          role-skip-session-tagging: true
 
       - name: Confirmar identidade APOS assume (deve ser a role)
         run: |
