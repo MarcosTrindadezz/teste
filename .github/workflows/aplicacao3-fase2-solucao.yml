@@ -1,0 +1,91 @@
+name: SIM aplicacao-3 FASE2 (solucao + experimento IAM)
+
+# Cenario:
+#  - usuario temp-ecr-public-test SEM permissao nenhuma (zerado)
+#  - role ci-ecr-oni-pull: SO permissao de puxar a imagem oni (pull-only),
+#    com trust relationship apontando para o usuario
+#  - o usuario tenta assumir a role MESMO sem ter sts:AssumeRole na policy dele
+#    (prova se a trust policy sozinha basta no mesmo-conta)
+#
+# Jobs:
+#  1) ecr-auth           -> usuario assume a role -> gera token do ECR privado
+#  2) deploy-nonprod     -> usa o token no container.credentials p/ PUXAR a oni (deve PASSAR)
+#  3) test-push-proibido -> com o mesmo token tenta docker push (deve FALHAR = pull-only)
+
+on:
+  workflow_dispatch: {}
+
+env:
+  ACCOUNT_ECR: "619071308707"
+  REGION: us-east-1
+
+jobs:
+  # 1) Usuario (sem permissao) tenta assumir a role pull-only via trust policy
+  ecr-auth:
+    runs-on: ubuntu-latest
+    outputs:
+      username: ${{ steps.login.outputs.docker_username_619071308707_dkr_ecr_us_east_1_amazonaws_com }}
+      password: ${{ steps.login.outputs.docker_password_619071308707_dkr_ecr_us_east_1_amazonaws_com }}
+    steps:
+      - name: Mostrar identidade do USUARIO (antes do assume)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          echo "=== quem e o usuario base ==="
+          aws sts get-caller-identity
+
+      - name: Configure AWS credentials (usuario -> ASSUME role pull-only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.DEPLOY_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.DEPLOY_AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::619071308707:role/ci-ecr-oni-pull
+          role-session-name: GithubOniPull
+
+      - name: Confirmar identidade APOS assume (deve ser a role)
+        run: |
+          echo "=== identidade apos assume-role ==="
+          aws sts get-caller-identity
+
+      - name: Login to Amazon ECR (private) - gera token
+        id: login
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          mask-password: 'false'
+
+  # 2) Puxa a oni do ECR privado usando o token (deve PASSAR)
+  deploy-nonprod:
+    runs-on: ubuntu-latest
+    needs: [ecr-auth]
+    container:
+      image: 619071308707.dkr.ecr.us-east-1.amazonaws.com/oni:3.6.3
+      credentials:
+        username: ${{ needs.ecr-auth.outputs.username }}
+        password: ${{ needs.ecr-auth.outputs.password }}
+    steps:
+      - name: Dentro do container oni (pull autenticado funcionou)
+        run: |
+          echo "PULL AUTENTICADO DO ECR PRIVADO: SUCESSO as $(date -u +%T) UTC"
+
+  # 3) Tenta PUSH com o mesmo token (deve FALHAR = prova pull-only)
+  test-push-proibido:
+    runs-on: ubuntu-latest
+    needs: [ecr-auth]
+    steps:
+      - name: Login no ECR com o token pull-only
+        run: |
+          echo "${{ needs.ecr-auth.outputs.password }}" | docker login --username "${{ needs.ecr-auth.outputs.username }}" --password-stdin 619071308707.dkr.ecr.us-east-1.amazonaws.com
+      - name: Puxar a oni (deve funcionar - pull)
+        run: docker pull 619071308707.dkr.ecr.us-east-1.amazonaws.com/oni:3.6.3
+      - name: Tentar PUSH (deve FALHAR com AccessDenied)
+        run: |
+          docker tag 619071308707.dkr.ecr.us-east-1.amazonaws.com/oni:3.6.3 619071308707.dkr.ecr.us-east-1.amazonaws.com/oni:hack-push
+          if docker push 619071308707.dkr.ecr.us-east-1.amazonaws.com/oni:hack-push; then
+            echo "PROBLEMA: push FUNCIONOU - token NAO e pull-only!"
+            exit 1
+          else
+            echo "OK: push NEGADO como esperado - token e PULL-ONLY"
+          fi
