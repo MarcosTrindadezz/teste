@@ -1,0 +1,43 @@
+name: SIM aplicacao-3 FASE1 (erro - pull anonimo publico)
+
+# Simula o deploy-ecs-dev-3.yml do gove-dte-api COMO ESTA HOJE:
+# container: public.ecr.aws/dnxbrasil/oni:3.6.3 (pull ANONIMO).
+# Objetivo: tentar reproduzir toomanyrequests. Como o dev-3 tem apenas 1 job
+# de deploy (nao 4 como o prod), o paralelismo e menor; para forcar a colisao
+# e evidenciar o limite anonimo, rodamos tambem replicas em matrix.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      TAG: ${{ steps.vars.outputs.tag }}
+    steps:
+      - id: vars
+        run: |
+          sleep 30
+          echo "tag=$(echo $GITHUB_SHA | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+  # replica fiel do dev-3: 1 deploy com container anonimo
+  deploy-nonprod:
+    runs-on: ubuntu-latest
+    needs: [build]
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "deploy-nonprod dentro do container oni (anonimo) as $(date -u +%T) UTC"
+
+  # estresse adicional: varias replicas puxando ao mesmo tempo p/ evidenciar o limite
+  deploy-stress:
+    runs-on: ubuntu-latest
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    container:
+      image: public.ecr.aws/dnxbrasil/oni:3.6.3
+    steps:
+      - run: echo "stress replica ${{ matrix.replica }} as $(date -u +%T) UTC"
